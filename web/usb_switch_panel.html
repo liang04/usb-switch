@@ -173,7 +173,7 @@
     </div>
     <div class="cfg-row">
       <label>Host B 桥接</label>
-      <input type="text" id="cfgB" placeholder="http://192.168.31.167:8738">
+      <input type="text" id="cfgB" placeholder="http://192.168.1.100:8738">
       <span class="cfg-state" id="stateB">—</span>
     </div>
     <div class="cfg-row">
@@ -211,7 +211,7 @@ const RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 const TX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
 const DEFAULT_A = "http://127.0.0.1:8737";
-const DEFAULT_B = "http://192.168.31.167:8738";
+const DEFAULT_B = "http://192.168.1.100:8738";   // 示例地址，请在面板中改为实际 Host B IP
 
 let device = null, rxChar = null;
 let currentHost = "none";          // 固件回报的最新状态: A / B / none

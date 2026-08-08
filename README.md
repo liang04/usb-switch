@@ -82,14 +82,14 @@ arduino-cli upload -p COM3 --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc" firmware/U
 **Host B（Linux）**：
 
 ```bash
-scp scripts/linux_bridge.py lckfb@<Host B IP>:~/usb_switch_bridge.py
-ssh lckfb@<Host B IP> "nohup python3 ~/usb_switch_bridge.py > ~/usb_switch_bridge.log 2>&1 &"
+scp scripts/linux_bridge.py <user>@<Host B IP>:~/usb_switch_bridge.py
+ssh <user>@<Host B IP> "nohup python3 ~/usb_switch_bridge.py > ~/usb_switch_bridge.log 2>&1 &"
 ```
 
-如 U 盘在 Linux 上被挂载，`umount` 需要 root，建议配置免密 sudo：
+如 U 盘在 Linux 上被挂载，`umount` 需要 root，建议配置免密 sudo（`<user>` 替换为实际用户名）：
 
 ```text
-lckfb ALL=(ALL) NOPASSWD: /bin/umount
+<user> ALL=(ALL) NOPASSWD: /bin/umount
 ```
 
 ### 3. 使用
