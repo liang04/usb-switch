@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>USB 切换器控制面板</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --card: #1a2233;
+    --border: #2a3550;
+    --text: #e8ecf4;
+    --muted: #8b96ad;
+    --accent: #4f8cff;
+    --green: #2ecc71;
+    --red: #e74c3c;
+    --amber: #f5a623;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .panel {
+    width: 100%;
+    max-width: 460px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.4);
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+  .conn-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--muted); flex-shrink: 0;
+    transition: background .3s;
+  }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .conn-status { font-size: 14px; flex: 1; color: var(--muted); }
+  .conn-status.connected { color: var(--text); }
+
+  button {
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    transition: transform .08s, opacity .2s, background .2s;
+  }
+  button:active { transform: scale(.97); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+
+  #btnConnect {
+    background: var(--accent);
+    color: #fff;
+    padding: 9px 18px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .config-box {
+    background: #121828;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    font-size: 13px;
+  }
+  .config-box .cfg-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .config-box .cfg-row:last-child { margin-bottom: 0; }
+  .config-box label { color: var(--muted); white-space: nowrap; }
+  .config-box input[type=text] {
+    flex: 1;
+    min-width: 0;
+    background: #0b0f1a;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: Consolas, monospace;
+  }
+  .cfg-state { white-space: nowrap; font-size: 12px; }
+  #btnSaveCfg { background: #232d45; color: var(--text); border: 1px solid var(--border); padding: 6px 12px; font-size: 12px; }
+
+  .safe-row {
+    display: flex; align-items: center; gap: 10px;
+    background: #121828;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .safe-row input { accent-color: var(--green); width: 16px; height: 16px; cursor: pointer; }
+
+  .hosts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .host-btn {
+    padding: 22px 10px;
+    font-size: 17px;
+    font-weight: 700;
+    background: #232d45;
+    color: var(--text);
+    border: 2px solid var(--border);
+  }
+  .host-btn small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .host-btn.active-a { border-color: var(--green); background: rgba(46,204,113,.12); }
+  .host-btn.active-b { border-color: var(--green); background: rgba(46,204,113,.12); }
+
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+  #btnOff { background: rgba(231,76,60,.15); color: var(--red); border: 2px solid rgba(231,76,60,.4); padding: 12px; font-weight: 600; }
+  #btnStatus { background: #232d45; color: var(--muted); border: 2px solid var(--border); padding: 12px; }
+
+  .status-box {
+    background: #121828;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 14px;
+    margin-bottom: 16px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 14px;
+  }
+  .status-box .k { color: var(--muted); }
+  .status-box .v { font-weight: 600; }
+  .v.ok { color: var(--green); }
+  .v.warn { color: var(--amber); }
+
+  .log {
+    background: #0b0f1a;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    height: 120px;
+    overflow-y: auto;
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  .log .ok { color: var(--green); }
+  .log .err { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h1>USB 切换器控制面板</h1>
+  <div class="subtitle">ESP32-C3 · BLE GATT · 双端安全弹出</div>
+
+  <div class="conn-row">
+    <div class="dot" id="dot"></div>
+    <div class="conn-status" id="connStatus">未连接</div>
+    <button id="btnConnect">连接设备</button>
+  </div>
+
+  <div class="config-box">
+    <div class="cfg-row">
+      <label>Host A 桥接</label>
+      <input type="text" id="cfgA" placeholder="http://127.0.0.1:8737">
+      <span class="cfg-state" id="stateA">—</span>
+    </div>
+    <div class="cfg-row">
+      <label>Host B 桥接</label>
+      <input type="text" id="cfgB" placeholder="http://192.168.31.167:8738">
+      <span class="cfg-state" id="stateB">—</span>
+    </div>
+    <div class="cfg-row">
+      <button id="btnSaveCfg">保存配置</button>
+    </div>
+  </div>
+
+  <div class="safe-row">
+    <input type="checkbox" id="chkSafe" checked>
+    <label for="chkSafe">切换前在当前主机上安全弹出 U 盘</label>
+  </div>
+
+  <div class="hosts">
+    <button class="host-btn" id="btnA" disabled>切换到 Host A<small>SEL=0 · VBUS_A</small></button>
+    <button class="host-btn" id="btnB" disabled>切换到 Host B<small>SEL=1 · VBUS_B</small></button>
+  </div>
+
+  <div class="row2">
+    <button id="btnOff" disabled>断开 U 盘</button>
+    <button id="btnStatus" disabled>刷新状态</button>
+  </div>
+
+  <div class="status-box">
+    <span class="k">当前主机</span><span class="v" id="stHost">—</span>
+    <span class="k">Host A 检测</span><span class="v" id="stDetA">—</span>
+    <span class="k">Host B 检测</span><span class="v" id="stDetB">—</span>
+  </div>
+
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+const TX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+const DEFAULT_A = "http://127.0.0.1:8737";
+const DEFAULT_B = "http://192.168.31.167:8738";
+
+let device = null, rxChar = null;
+let currentHost = "none";          // 固件回报的最新状态: A / B / none
+let bridgeOk = { A: false, B: false };
+
+const $ = id => document.getElementById(id);
+const logEl = $("log");
+
+function log(msg, cls = "") {
+  const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = `[${time}] ${msg}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---------------- 桥接配置（localStorage 持久化） ----------------
+function bridgeUrl(host) {
+  const saved = localStorage.getItem("bridge_" + host);
+  return (saved || (host === "A" ? DEFAULT_A : DEFAULT_B)).replace(/\/+$/, "");
+}
+
+function loadConfig() {
+  $("cfgA").value = bridgeUrl("A");
+  $("cfgB").value = bridgeUrl("B");
+}
+
+$("btnSaveCfg").onclick = () => {
+  localStorage.setItem("bridge_A", $("cfgA").value.trim());
+  localStorage.setItem("bridge_B", $("cfgB").value.trim());
+  log("桥接配置已保存");
+  checkBridges();
+};
+
+// ---------------- 桥接状态检测 ----------------
+async function checkOne(host) {
+  const el = $("state" + host);
+  try {
+    const r = await fetch(bridgeUrl(host) + "/status", { signal: AbortSignal.timeout(3000) });
+    const j = await r.json();
+    bridgeOk[host] = !!j.ok;
+    if (j.ok) {
+      const extra = j.drives !== undefined
+        ? (j.drives.length ? "U盘在线" : "无U盘")
+        : (j.mounts && j.mounts.length ? "U盘在线" : "无U盘");
+      el.textContent = "✓ " + extra;
+      el.style.color = "var(--green)";
+    } else {
+      el.textContent = "✗ 异常";
+      el.style.color = "var(--red)";
+    }
+  } catch {
+    bridgeOk[host] = false;
+    el.textContent = "✗ 未运行";
+    el.style.color = "var(--amber)";
+  }
+}
+
+function checkBridges() {
+  checkOne("A");
+  checkOne("B");
+}
+
+// ---------------- 安全弹出（在指定主机的桥接上执行） ----------------
+async function ejectOn(host) {
+  if (!bridgeOk[host]) {
+    log(`Host ${host} 的桥接服务未运行，无法安全弹出。已中止切换。`, "err");
+    return false;
+  }
+  log(`正在 Host ${host} 上安全弹出 U 盘 ...`);
+  try {
+    const r = await fetch(bridgeUrl(host) + "/eject", { method: "POST", signal: AbortSignal.timeout(30000) });
+    const j = await r.json();
+    if (j.ok) {
+      log(j.ejected ? `Host ${host}: 已弹出 ${j.ejected}` : `Host ${host}: ${j.warning || "无需弹出"}`, "ok");
+      return true;
+    }
+    log(`Host ${host} 弹出失败: ${j.error} — 已中止切换`, "err");
+    return false;
+  } catch (e) {
+    log(`Host ${host} 桥接请求失败: ${e.message} — 已中止切换`, "err");
+    return false;
+  }
+}
+
+// ---------------- 蓝牙连接 ----------------
+function setConnected(on) {
+  $("dot").classList.toggle("on", on);
+  $("connStatus").textContent = on ? `已连接: ${device.name || device.id}` : "未连接";
+  $("connStatus").classList.toggle("connected", on);
+  $("btnConnect").textContent = on ? "断开连接" : "连接设备";
+  for (const id of ["btnA", "btnB", "btnOff", "btnStatus"]) $(id).disabled = !on;
+  if (!on) {
+    $("stHost").textContent = "—"; $("stHost").className = "v";
+    $("stDetA").textContent = "—"; $("stDetB").textContent = "—";
+    $("btnA").classList.remove("active-a");
+    $("btnB").classList.remove("active-b");
+    currentHost = "none";
+  }
+}
+
+function applyStatus(text) {
+  const host = text.match(/host=(\w+)/);
+  const detA = text.match(/detA=(\d)/);
+  const detB = text.match(/detB=(\d)/);
+  if (host) {
+    const h = host[1];
+    currentHost = h === "A" || h === "B" ? h : "none";
+    const label = h === "A" ? "Host A" : h === "B" ? "Host B" : "已断开";
+    $("stHost").textContent = label;
+    $("stHost").className = "v " + (h === "none" ? "warn" : "ok");
+    $("btnA").classList.toggle("active-a", h === "A");
+    $("btnB").classList.toggle("active-b", h === "B");
+  }
+  if (detA) { $("stDetA").textContent = detA[1] === "1" ? "已插入" : "无"; $("stDetA").className = "v " + (detA[1] === "1" ? "ok" : ""); }
+  if (detB) { $("stDetB").textContent = detB[1] === "1" ? "已插入" : "无"; $("stDetB").className = "v " + (detB[1] === "1" ? "ok" : ""); }
+}
+
+function onNotify(event) {
+  const text = new TextDecoder().decode(event.target.value);
+  const cls = text.startsWith("OK") || text.startsWith("STATUS") ? "ok" : text.startsWith("FAIL") ? "err" : "";
+  log(`设备: ${text}`, cls);
+  applyStatus(text);
+}
+
+async function send(cmd) {
+  if (!rxChar) return;
+  log(`发送: ${cmd}`);
+  await rxChar.writeValueWithoutResponse(new TextEncoder().encode(cmd));
+}
+
+// 切换类命令统一入口：先在「当前主机」上安全弹出，成功才发蓝牙命令
+async function switchCmd(cmd) {
+  if ($("chkSafe").checked && currentHost !== "none") {
+    if (!await ejectOn(currentHost)) return;
+  }
+  await send(cmd);
+}
+
+async function connect() {
+  if (device && device.gatt.connected) { device.gatt.disconnect(); return; }
+  if (!navigator.bluetooth) {
+    log("当前浏览器不支持 Web Bluetooth，请使用 Chrome / Edge", "err");
+    return;
+  }
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }]
+    });
+    device.addEventListener("gattserverdisconnected", () => {
+      log("连接已断开", "err");
+      rxChar = null;
+      setConnected(false);
+    });
+    log("正在连接...");
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    rxChar = await service.getCharacteristic(RX_UUID);
+    const txChar = await service.getCharacteristic(TX_UUID);
+    await txChar.startNotifications();
+    txChar.addEventListener("characteristicvaluechanged", onNotify);
+    setConnected(true);
+    log("连接成功", "ok");
+    await send("s");  // 连接后自动查询状态
+  } catch (e) {
+    log(`连接失败: ${e.message}`, "err");
+    rxChar = null;
+    setConnected(false);
+  }
+}
+
+$("btnConnect").onclick = connect;
+$("btnA").onclick = () => switchCmd("a");
+$("btnB").onclick = () => switchCmd("b");
+$("btnOff").onclick = () => switchCmd("x");
+$("btnStatus").onclick = () => send("s");
+
+if (!navigator.bluetooth) {
+  log("提示: 请使用 Chrome 或 Edge 浏览器打开本页面", "err");
+} else {
+  log("就绪，点击「连接设备」开始");
+}
+loadConfig();
+checkBridges();
+setInterval(checkBridges, 10000);
+</script>
+</body>
+</html>

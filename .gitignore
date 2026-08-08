@@ -1,0 +1,15 @@
+# 构建产物（可重新编译生成）
+build/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地工具链（约 54 MB，安装方法见 README「固件编译与烧写」）
+tools/
+
+# 本地开发工具与日志
+.easyeda-bridge/
+.agents/
+*.log
+tmp/
