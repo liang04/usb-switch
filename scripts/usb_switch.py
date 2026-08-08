@@ -44,7 +44,12 @@ async def main(cmd: str) -> int:
 
     async with BleakClient(device, winrt={"use_cached_services": False}) as client:
         print("已连接。")
-        await client.start_notify(TX_UUID, on_notify)
+        try:
+            await client.start_notify(TX_UUID, on_notify)
+        except Exception as e:
+            print(f"错误: 服务发现失败（{type(e).__name__}）。")
+            print("这是 Windows GATT 缓存损坏的典型症状，请关闭再打开蓝牙开关后重试。")
+            return 4
         await client.write_gatt_char(RX_UUID, cmd.encode("utf-8"), response=False)
         # 等待固件执行切换时序（最长约 1.5 秒）并回传结果
         for _ in range(50):

@@ -118,6 +118,11 @@ ssh <user>@<Host B IP> "nohup python3 ~/usb_switch_bridge.py > ~/usb_switch_brid
 
 命令：`a` / `b` / `x`（断开）/ `s`（查询状态）。手机 nRF Connect 也可直接控制。
 
+固件支持**多客户端并发**（最多 3 路，连接期间继续广播），网页面板和控制脚本可以同时在线。
+已知边界：Windows 上两个基于 WinRT 的客户端（如两个 Python 脚本）并发时，
+第二个会话的 GATT 服务发现可能不完整；Chrome 面板走独立 GATT 实现，不受影响。
+若脚本报「服务发现失败」，关闭再打开蓝牙开关即可恢复。
+
 ## 注意事项
 
 1. 固件中的 `switchTo()` 是唯一允许操作 VBUS 的入口，**不要绕过它直接写 VBUS_EN 引脚**

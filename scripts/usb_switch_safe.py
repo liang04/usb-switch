@@ -112,8 +112,14 @@ async def ble_switch(cmd: str) -> bool:
         replies.append(text)
         print(f"设备回复: {text}")
 
-    async with BleakClient(device) as client:
-        await client.start_notify(TX_UUID, on_notify)
+    async with BleakClient(device, winrt={"use_cached_services": False}) as client:
+        try:
+            await client.start_notify(TX_UUID, on_notify)
+        except Exception as e:
+            raise RuntimeError(
+                f"服务发现失败（{type(e).__name__}）。"
+                "这是 Windows GATT 缓存损坏的典型症状，请关闭再打开蓝牙开关后重试。"
+            )
         await client.write_gatt_char(RX_UUID, cmd.encode(), response=False)
         for _ in range(50):
             if replies:

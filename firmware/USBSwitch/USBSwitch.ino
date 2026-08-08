@@ -84,8 +84,9 @@ bool switchTo(Host target)
 // 通知特征 (TX):    6E400003-B5A3-F393-E0A9-E50E24DCCA9E  <- 固件回传状态
 
 #define BLE_DEVICE_NAME "USB-Switch"
+#define BLE_MAX_CLIENTS 3   // NimBLE 默认即支持 3 路并发连接
 static NimBLECharacteristic* txChar = nullptr;
-static bool bleConnected = false;
+static volatile uint8_t bleConnCount = 0;
 
 String statusString()
 {
@@ -101,9 +102,9 @@ String statusString()
 void notifyStatus(const String& msg)
 {
   Serial.println(msg);
-  if (txChar != nullptr && bleConnected) {
+  if (txChar != nullptr && bleConnCount > 0) {
     txChar->setValue(msg.c_str());
-    txChar->notify();
+    txChar->notify();  // NimBLE 2.x: 通知所有已订阅的连接
   }
 }
 
@@ -130,14 +131,13 @@ void handleCommand(char cmd)
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
-    bleConnected = true;
-    Serial.println("BLE connected");
+    bleConnCount++;
+    Serial.printf("BLE connected, clients=%d\n", bleConnCount);
+    // 不在回调里重启广播（回调上下文下可能失败），由 loop() 看门狗统一处理
   }
   void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
-    bleConnected = false;
-    Serial.println("BLE disconnected");
-    // 不在回调里直接重启广播（NimBLE 2.x 回调上下文下可能失败），
-    // 由 loop() 里的看门狗负责重启
+    if (bleConnCount > 0) bleConnCount--;
+    Serial.printf("BLE disconnected, clients=%d\n", bleConnCount);
   }
 };
 
@@ -218,13 +218,13 @@ void loop()
     handleCommand((char)Serial.read());
   }
 
-  // 广播看门狗：未连接且广播停止时自动重启广播
+  // 广播看门狗：广播停止且连接数未达上限时自动重启广播
+  // （多连接模式：即使有客户端连着也继续广播，允许新客户端接入）
   static uint32_t lastAdvCheck = 0;
-  if (!bleConnected && millis() - lastAdvCheck > 2000) {
+  if (millis() - lastAdvCheck > 1000) {
     lastAdvCheck = millis();
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-    if (adv != nullptr && !adv->isAdvertising()) {
-      Serial.println("Advertising watchdog: restarting");
+    if (adv != nullptr && !adv->isAdvertising() && bleConnCount < BLE_MAX_CLIENTS) {
       adv->start();
     }
   }
