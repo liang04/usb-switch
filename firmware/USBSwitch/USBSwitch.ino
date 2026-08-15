@@ -12,15 +12,34 @@ constexpr uint8_t PIN_VBUS_A = 6;
 constexpr uint8_t PIN_VBUS_B = 7;
 constexpr uint8_t PIN_DET_A  = 0;
 constexpr uint8_t PIN_DET_B  = 1;
+constexpr uint8_t PIN_STATUS_LED = 8;
+constexpr uint8_t STATUS_LED_ON_LEVEL = LOW;
+constexpr uint8_t STATUS_LED_OFF_LEVEL = HIGH;
 
 constexpr uint32_t DATA_OFF_DELAY = 50;
 constexpr uint32_t VBUS_OFF_DELAY = 300;
 constexpr uint32_t VBUS_ON_DELAY  = 300;
+constexpr uint32_t LED_BLINK_INTERVAL = 500;
 
 // ---------------- 主机切换逻辑（与文档第 8 节一致） ----------------
 enum class Host : uint8_t { None, A, B };
 
 Host currentHost = Host::None;
+bool systemReady = false;
+
+void updateHeartbeatLed()
+{
+  static uint32_t lastToggle = 0;
+  static bool ledOn = false;
+  const uint32_t now = millis();
+
+  if (now - lastToggle < LED_BLINK_INTERVAL) return;
+
+  lastToggle = now;
+  ledOn = !ledOn;
+  digitalWrite(PIN_STATUS_LED,
+               ledOn ? STATUS_LED_ON_LEVEL : STATUS_LED_OFF_LEVEL);
+}
 
 bool hostPresent(Host host)
 {
@@ -194,6 +213,8 @@ void setup()
   pinMode(PIN_VBUS_B, OUTPUT);
   pinMode(PIN_DET_A, INPUT);
   pinMode(PIN_DET_B, INPUT);
+  pinMode(PIN_STATUS_LED, OUTPUT);
+  digitalWrite(PIN_STATUS_LED, STATUS_LED_OFF_LEVEL);
 
   // 上电安全状态：默认选择 A，但数据和 VBUS 均关闭
   digitalWrite(PIN_SEL, LOW);
@@ -210,10 +231,13 @@ void setup()
   else if (hostPresent(Host::B)) switchTo(Host::B);
 
   notifyStatus("READY: " + statusString());
+  systemReady = true;
 }
 
 void loop()
 {
+  if (systemReady) updateHeartbeatLed();
+
   if (Serial.available()) {
     handleCommand((char)Serial.read());
   }
