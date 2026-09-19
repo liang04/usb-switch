@@ -163,6 +163,9 @@ QLabel#Chip[state="ok"] {{ background: {THEME['success_bg']}; color: {THEME['suc
 QLabel#Chip[state="warn"] {{ background: {THEME['warning_bg']}; color: {THEME['warning']}; }}
 QLabel#Chip[state="error"] {{ background: {THEME['danger_bg']}; color: {THEME['danger']}; }}
 QLabel#Chip[state="info"] {{ background: {THEME['accent_bg']}; color: {THEME['accent']}; }}
+/* 必须排在状态规则**之后**：同为 (0,1,1,1) 特异度，靠位置取胜，
+   否则 ::disabled 压不过上面那些 [state=...] */
+QLabel#Chip:disabled {{ background: {THEME['idle_bg']}; color: {THEME['text_faint']}; }}
 
 /* ------------------------------------------------------------- 状态栏 -- */
 
@@ -202,6 +205,31 @@ QGroupBox[bare="true"] {{
     margin-top: 0;
     padding: 0;
 }}
+/* 对话框里的表单分组：同一个形状，但内边距收紧一档 —— 对话框里没有分区头，
+   两个分组叠起来时默认那套留白会把它撑得很高 */
+QGroupBox#FormGroup {{
+    margin-top: 12px;
+    padding: 12px 14px 12px 14px;
+}}
+
+/* ------------------------------------------------------ 对话框：分段与提示 -- */
+
+/* 分组内的小节分隔线 */
+QWidget#Rule {{ background: {THEME['border']}; }}
+QLabel#SubTitle {{ color: {THEME['muted']}; font-size: {FONT['caption']}px; }}
+
+/* 底部提示条：中性底 + 错误时换警示色。着色走属性选择器，不写死样式。 */
+QFrame#HintBar {{
+    background: {THEME['surface_alt']};
+    border: 1px solid {THEME['border']};
+    border-radius: {RADIUS['control']}px;
+}}
+QFrame#HintBar[state="error"] {{
+    background: {THEME['danger_bg']};
+    border-color: {THEME['danger_border']};
+}}
+/* 特异度 (0,1,1,2) > QLabel#Muted 的 (0,1,0,1)，能压过它 */
+QFrame#HintBar[state="error"] QLabel#Muted {{ color: {THEME['danger']}; }}
 
 QPushButton {{
     background: {THEME['surface']};

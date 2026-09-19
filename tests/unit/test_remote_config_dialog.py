@@ -41,7 +41,31 @@ def test_password_is_never_echoed(qapp, data_dir):
     dialog = _dialog(_remote_config())
 
     assert dialog._password.text() == "", "密码被回显到了输入框"
-    assert "已保存" in dialog._password.placeholderText()
+    assert "不修改" in dialog._password.placeholderText()
+
+
+def test_password_state_is_a_chip_not_a_placeholder(qapp, data_dir):
+    """「已保存」必须是常驻徽标，不能只靠 placeholder。
+
+    踩过的点：状态原先只写在 placeholder 上，用户往框里敲下第一个字符，那句
+    「已保存」当场消失 —— 恰恰是他最需要确认「原来存过密码」的时刻。
+    """
+    dialog = _dialog(_remote_config())
+
+    assert dialog._password_state.text() == "已保存"
+
+    dialog._password.setText("newpass")
+    dialog._password.textEdited.emit("newpass")
+
+    assert dialog._password_state.text() == "已保存", "开始输入后状态徽标不该消失"
+
+
+def test_password_chip_says_unset_without_password(qapp, data_dir):
+    """没存过密码时，徽标要明说「未设置」—— 别让用户以为框里的空白是已配置。"""
+    dialog = _dialog(_remote_config(with_password=False))
+
+    assert dialog._password_state.text() == "未设置"
+    assert dialog._password.placeholderText() == "SSH 登录密码", "空密码时不该提示「留空不修改」"
 
 
 def test_password_survives_editing_other_fields(qapp, data_dir):
@@ -88,6 +112,48 @@ def test_validation_passes_for_complete_config(qapp, data_dir):
 
     assert dialog.validation_errors() == []
     assert "SSH 隧道" in dialog._validation.text()
+
+
+def test_hint_bar_flags_errors_by_property_not_stylesheet(qapp, data_dir):
+    """提示条的颜色由 QSS 属性选择器决定，不在代码里写死样式。
+
+    写死 `setStyleSheet` 会盖掉控件级 QSS，换主题时还得回来改这一处。
+    """
+    broken = _dialog(AppConfig())  # Host B 未填任何参数
+    assert broken._hint_bar.property("state") == "error"
+    assert "·" in broken._validation.text()
+
+    ok = _dialog(_remote_config())
+    assert ok._hint_bar.property("state") == "info"
+
+
+def test_local_port_lives_in_its_own_group(qapp, data_dir):
+    """本机端口有自己的分组框，且**不在** `_creds` 里。
+
+    它曾经只是根布局上的一行裸控件、紧贴在 Host B 的卡片之前，读起来像那张卡
+    的说明文字。反过来也不能并进 `_creds` —— 分组会整体 `setEnabled(False)`，
+    子控件继承禁用状态，这个端口就再也改不了了。
+    """
+    dialog = _dialog(_remote_config())
+
+    assert dialog._local_port.isEnabled() is True
+    assert dialog._creds.isAncestorOf(dialog._local_port) is False
+    assert dialog._creds.isAncestorOf(dialog._host) is True
+
+
+def test_no_button_swallows_enter(qapp, data_dir):
+    """填表时回车不该关窗。
+
+    「完成」曾经是 `setDefault(True)`：用户在 IP 框里敲完想确认这一格，一按回车
+    整个窗口就没了。判据**枚举**对话框里所有按钮逐个断言，以后新增按钮也绕不开。
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    dialog = _dialog(_remote_config())
+    buttons = dialog.findChildren(QPushButton)
+
+    assert buttons, "一个按钮都没找到，说明选择器写错了"
+    assert [b.text() for b in buttons if b.autoDefault()] == []
 
 
 def test_dialog_has_no_role_or_kind_selectors(qapp, data_dir):
