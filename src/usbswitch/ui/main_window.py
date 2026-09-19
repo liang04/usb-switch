@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         self._remote.uninstallRequested.connect(self._remote_worker.uninstall)
         self._remote.refreshRequested.connect(self._remote_worker.inspect)
         self._remote.configureRequested.connect(self.open_remote_config)
+        self._remote.enabledChanged.connect(self._on_remote_enabled_changed)
 
         self._remote_worker.stateUpdated.connect(self._on_remote_state)
         self._remote_worker.envDetected.connect(self._on_remote_env)
@@ -355,13 +356,21 @@ class MainWindow(QMainWindow):
 
     def _update_remote_summary(self) -> None:
         section = self._sections["remote"]
+        remote = self._config.remote_bridge()
+
+        # 「已禁用」必须与「未配置」分开说：前者是用户自己关的，后者是压根没填。
+        # 混成同一句话，用户会以为禁用把配置吃掉了。
+        if not remote.enabled:
+            section.set_summary("远程桥接服务已禁用 —— Host B 安全弹出锁未启用")
+            section.set_chip("已禁用", "warn")
+            return
+
         host = self._config.remote_host()
         if host is None:
             section.set_summary("Host B 未配置远程（Linux）桥接 —— 安全弹出锁未启用")
             section.set_chip("", "idle")
             return
 
-        remote = self._config.bridges[host].remote
         name = remote.display_name or remote.host or "未填写地址"
         transport = "SSH 隧道" if remote.use_tunnel else f"{remote.host}:{remote.bridge_port}"
         section.set_summary(f"{host.label} · {name} · {remote.username or '未填用户名'} · {transport}")
@@ -495,8 +504,9 @@ class MainWindow(QMainWindow):
 
         - **Host A（本机 Windows）**：跟随本机桥接服务。服务停着，桥接地址
           根本不通，弹出必然失败；此时锁一并解除，切换照常进行但跳过本机弹出。
-        - **Host B（远程 Linux）**：跟随远程桥接配置。没填地址就没有可弹出的
-          对端，锁不启用。
+        - **Host B（远程 Linux）**：跟随远程桥接。既没填地址、也没被启用时就没有
+          可弹出的对端，锁不启用。两者在 `remote_host()` 里已经收敛成同一个
+          None，这里不必分开判断。
 
         只做纯读取（`BridgeWorker.is_started` 是普通属性），没有 Qt 调用，
         因此跨线程直接读是安全的。
@@ -597,6 +607,41 @@ class MainWindow(QMainWindow):
             self._remote_worker.refreshHttp()
 
     # -- 远程桥接 ----------------------------------------------------------- #
+
+    def _on_remote_enabled_changed(self, enabled: bool) -> None:
+        """远程桥接服务总开关被切换。
+
+        关掉它等于宣告「Host B 不使用远程桥接」，四件事一并收敛，全部由
+        ``AppConfig.remote_host()`` 这一条判据派生，这里不重新判断：
+
+        1. Host B 的安全弹出锁 —— 切换前不再要求弹出（``_eject_lock_for``）
+        2. SSH 隧道 —— 立即拆掉，不是等下一次配置变更
+        3. 远程管理操作与状态灯 —— 面板置灰（``refresh_target``）
+        4. 周期 HTTP 探活 —— ``_poll_bridges`` 里的 target_host 判据自动跳过
+        """
+        self._config.remote_bridge().enabled = enabled
+        self._save_config()
+
+        if not enabled:
+            # 不清掉的话，重新启用后 chip 会先显示上一次的「在线」，
+            # 直到下一轮探活（最多 5 秒）才纠正过来 —— 一段凭空的假状态
+            self._remote_http_online = False
+
+        # 隧道是绑在目标上的：取消防抖立即同步，禁用要立刻拆、启用要立刻建
+        self._tunnel_sync.stop()
+        # 先重画灯再同步隧道：apply_tunnel 会用真实运行态覆盖隧道那盏，
+        # 另两盏（SSH / 桥接服务）没有新探测结果，必须由 refresh_lights 立刻改口
+        self._remote.refresh_lights()
+        self._refresh_tunnel()
+        self._remote.refresh_target()
+        self._update_remote_summary()
+        self._update_options_summary()
+        self._update_status_bar()
+        self._append(
+            "info",
+            f"远程桥接服务已{'启用' if enabled else '禁用'}"
+            + ("" if enabled else "，Host B 切换前将不再执行安全弹出"),
+        )
 
     def _on_remote_install(self) -> None:
         """安装前先做本地校验。

@@ -626,6 +626,115 @@ def test_remote_panel_ops_disabled_without_remote_role(qapp, data_dir):
     assert "配置…" in panel._hint.text()
 
 
+def test_remote_panel_master_switch_reflects_config(qapp, data_dir):
+    """总开关的勾选态来自**配置**，不是控件自己的记忆。
+
+    「配置 → 界面」这条方向必须靠回填：加载配置、配置窗口改完、或别的路径
+    动了 `enabled`，面板都得跟着。否则会出现「配置里已禁用、界面上还勾着」。
+    """
+    from usbswitch.ui.panels.remote_panel import RemotePanel
+
+    config = _remote_config()
+    panel = RemotePanel(config)
+    assert panel._enable.isChecked() is True
+    assert panel.is_enabled() is True
+
+    config.bridges[Host.B].remote.enabled = False
+    panel.refresh_target()
+
+    assert panel._enable.isChecked() is False
+    assert panel.is_enabled() is False
+
+
+def test_remote_panel_refresh_does_not_re_emit_enable(qapp, data_dir):
+    """回归测试：刷新界面不能变成「又写一次配置」。
+
+    信号若接 `toggled`，`refresh_target()` 里的 `setChecked` 就会把它再打出来 ——
+    每刷新一次就多一条「远程桥接服务已启用」日志、多一次落盘。而 `refresh_target`
+    是被 `_on_remote_state` 之类的回调高频调用的，用户会以为自己反复误触了开关。
+    所以信号接的是 `clicked`（只有真实操作才触发）。
+    """
+    from usbswitch.ui.panels.remote_panel import RemotePanel
+
+    panel = RemotePanel(_remote_config())
+    seen: list[bool] = []
+    panel.enabledChanged.connect(seen.append)
+
+    panel.refresh_target()
+    panel.refresh_target()
+
+    assert seen == [], f"刷新回填不该触发信号，实际收到 {seen}"
+
+
+def test_remote_panel_disabled_says_disabled_not_unconfigured(qapp, data_dir):
+    """「已禁用」与「未配置」必须分开说 —— 否则用户会去重填一个填对了的地址。"""
+    from usbswitch.core.bridge_remote import RemoteState
+    from usbswitch.core.models import BridgeRunState
+    from usbswitch.ui.panels.remote_panel import RemotePanel
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.enabled = False
+    panel = RemotePanel(config)
+
+    # 故意喂「一切正常」的状态：禁用态下不能再显示成在线，那是在撒谎
+    panel.apply_state(RemoteState(ssh_checked=True, ssh_reachable=True, http_online=True))
+    panel.apply_tunnel(BridgeRunState.RUNNING)
+
+    assert "已禁用" in panel._hint.text()
+    assert "已禁用" in panel._light_ssh._label.text()
+    assert "已禁用" in panel._light_http._label.text()
+    assert "已禁用" in panel._light_tunnel._label.text()
+    # 参数在禁用态下仍要可见，用户才知道自己关掉的是哪一台
+    assert "192.168.1.100" in panel._target.text()
+
+
+def test_remote_panel_disabled_keeps_the_way_back_open(qapp, data_dir):
+    """禁用后远程操作置灰，但总开关与「配置…」必须还点得动。
+
+    总开关是**唯一**能把服务重新打开的入口，配置入口是唯一能改错的地方；
+    任一个跟着 `_ready` 一起灰掉，用户就再也回不来了。
+    """
+    from usbswitch.ui.panels.remote_panel import RemotePanel
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.enabled = False
+    panel = RemotePanel(config)
+
+    assert panel._btn_install.isEnabled() is False
+    assert panel._btn_test.isEnabled() is False
+    assert panel._btn_configure.isEnabled() is True
+    assert panel._enable.isEnabled() is True
+
+
+def test_remote_panel_refresh_lights_rewrites_all_three(qapp, data_dir):
+    """总开关一切换，三盏灯必须**当场**重画，不能等下一轮探测。
+
+    这是看截图才发现的：禁用后分区头写着「已禁用」，SSH 与桥接服务两盏灯却
+    还停在禁用前的旧内容上，同一个分区里自相矛盾，最多 5 秒后才被轮询纠正。
+    """
+    from usbswitch.core.bridge_remote import RemoteState
+    from usbswitch.core.models import BridgeRunState
+    from usbswitch.ui.panels.remote_panel import RemotePanel
+
+    config = _remote_config()
+    panel = RemotePanel(config)
+    # 先让灯处于「一切在线」的状态，模拟禁用前刚探测完
+    panel.apply_state(RemoteState(ssh_checked=True, ssh_reachable=True, http_online=True))
+    panel.apply_tunnel(BridgeRunState.RUNNING)
+    assert "在线" in panel._light_http._label.text()
+
+    config.bridges[Host.B].remote.enabled = False
+    panel.refresh_lights()
+    for light in (panel._light_ssh, panel._light_http, panel._light_tunnel):
+        assert "已禁用" in light._label.text(), f"灯没改口：{light._label.text()}"
+
+    config.bridges[Host.B].remote.enabled = True
+    panel.refresh_lights()
+    assert "已禁用" not in panel._light_ssh._label.text()
+    assert "在线" not in panel._light_http._label.text(), "旧的「在线」结论必须作废"
+    assert "未检测" in panel._light_ssh._label.text()
+
+
 def test_remote_panel_warns_but_still_allows_ops_on_incomplete_config(qapp, data_dir):
     """配置不完整时给警告，但**不禁用**按钮。
 
@@ -773,6 +882,83 @@ def test_tunnel_worker_sync_without_config_is_noop(qapp, data_dir):
     assert worker.state.value == "stopped"
 
 
+def test_tunnel_worker_ignores_remote_when_disabled(qapp, data_dir):
+    """总开关关掉后不去建隧道 —— 配置齐全也不行。"""
+    from usbswitch.workers.tunnel_worker import TunnelWorker
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.use_tunnel = True
+    assert TunnelWorker(config).is_configured is True
+
+    config.bridges[Host.B].remote.enabled = False
+
+    assert TunnelWorker(config).is_configured is False
+
+
+def test_tunnel_teardown_clears_stale_base_even_when_disabled(qapp, data_dir):
+    """回归测试：禁用后残留的隧道地址必须被抹掉。
+
+    这条守的是一个很容易写错的细节 —— 清理逻辑若走 ``remote_host()``，
+    禁用时它返回 None，于是**恰好跳过**清理。下次启用时 ``http_base`` 会先指向
+    一个早就关掉的本地端口，表现为「刚打开就说桥接不可达」。
+    """
+    from usbswitch.workers.tunnel_worker import TunnelWorker
+
+    config = _remote_config()
+    remote = config.bridges[Host.B].remote
+    remote.runtime_http_base = "http://127.0.0.1:54321"  # 上一次隧道留下的地址
+    remote.enabled = False
+
+    worker = TunnelWorker(config)
+    worker.sync()
+
+    assert remote.runtime_http_base == "", "禁用后残留的隧道地址没被清掉"
+    assert worker.is_running is False
+
+
+def test_tunnel_worker_tears_down_when_remote_bridge_disabled(qapp, data_dir, monkeypatch):
+    """禁用后 sync() 必须把正在跑的隧道**立即**拆掉。
+
+    用假隧道替掉 SshTunnel：真实现会去连 192.168.1.100，让单元测试依赖一台
+    并不存在的远端设备，既慢又不稳。这里要验的是「拆」这个动作有没有发生。
+    """
+    from usbswitch.core.models import BridgeRunState
+    from usbswitch.workers import tunnel_worker as module
+
+    started: list[int] = []
+    stopped: list[int] = []
+
+    class FakeTunnel:
+        def __init__(self, remote, on_log=None, on_state=None) -> None:
+            self.is_running = False
+            self.state = BridgeRunState.STOPPED
+
+        def start(self) -> None:
+            started.append(1)
+            self.is_running = True
+            self.state = BridgeRunState.RUNNING
+
+        def stop(self) -> None:
+            stopped.append(1)
+            self.is_running = False
+            self.state = BridgeRunState.STOPPED
+
+    monkeypatch.setattr(module, "SshTunnel", FakeTunnel)
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.use_tunnel = True
+    worker = module.TunnelWorker(config)
+
+    worker.sync()
+    assert started == [1], "启用且配置齐全时应当把隧道建起来"
+
+    config.bridges[Host.B].remote.enabled = False
+    worker.sync()
+
+    assert stopped == [1], "禁用后必须立即拆掉隧道，而不是等它自己断"
+    assert worker.is_running is False
+
+
 def test_main_window_owns_tunnel_worker(qapp, data_dir):
     from usbswitch.core.models import AppConfig
     from usbswitch.ui.main_window import MainWindow
@@ -847,6 +1033,32 @@ def test_remote_worker_reports_unconfigured(qapp, data_dir):
     message, hint = failures[0]
     assert "尚未配置远程主机" in message
     assert "SSH 端口" in hint
+
+
+def test_remote_worker_reports_disabled_distinctly(qapp, data_dir):
+    """禁用后残留命令的兜底提示必须说「已禁用」，而不是「尚未配置」。
+
+    面板在禁用时已把按钮置灰，正常路径走不到这里；但队列里可能还压着一条
+    禁用**之前**排队的命令。此时若报「尚未配置远程主机」，用户会去重填一个
+    本来就填对的地址，越查越远。
+    """
+    from usbswitch.workers.remote_worker import RemoteWorker
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.enabled = False
+    worker = RemoteWorker(config)
+    failures: list[tuple[str, str]] = []
+    worker.operationFailed.connect(lambda m, h: failures.append((m, h)))
+    worker.start()
+    try:
+        worker.testConnection()
+        assert _wait(lambda: bool(failures)), "禁用时应当报错"
+    finally:
+        assert worker.shutdown() is True
+
+    message, hint = failures[0]
+    assert "已禁用" in message
+    assert "启用远程桥接" in hint
 
 
 def test_remote_worker_http_poll_is_silent_when_unconfigured(qapp, data_dir):
@@ -1321,6 +1533,85 @@ def test_options_summary_shows_both_eject_locks(qapp, data_dir):
         assert "Host B 开" in window.section("options").summary_text()
     finally:
         window.shutdown()
+
+
+def test_disabling_remote_bridge_releases_host_b_eject_lock(qapp, data_dir):
+    """本功能的核心承诺：总开关关掉后，切换 Host B 前不再要求安全弹出。
+
+    注意「不再弹出」≠「配置被清空」—— 用户关掉的是**行为**，不是**参数**。
+    两条断言必须同时成立，只满足一条都算做错了：清空参数会让人以为配置被吃掉，
+    而保留参数但锁不放开会让人切不动盘。
+
+    `use_tunnel=False`：`MainWindow.__init__` 会立刻 sync 一次隧道，开着隧道开关
+    就会真去连 192.168.1.100。本用例只关心锁，不该顺带做网络 I/O。
+    """
+    from usbswitch.core.models import Host
+    from usbswitch.ui.main_window import MainWindow
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.use_tunnel = False
+    window = MainWindow(config)
+    try:
+        assert window._eject_lock_for(Host.B) is True, "填了地址，B 的锁应当开启"
+
+        window._on_remote_enabled_changed(False)
+
+        assert window._eject_lock_for(Host.B) is False, "禁用后不得再要求弹出"
+        assert window._config.remote_bridge().host == "192.168.1.100", "参数不该被清掉"
+        assert "Host B 关" in window.section("options").summary_text()
+        assert "已禁用" in window.section("remote").chip_text()
+        # 三盏灯必须**当场**改口。曾经只改了口径而没重画灯，于是分区头写着
+        # 「已禁用」、灯还显示「在线」，要等最多一个轮询周期才自洽 ——
+        # 这个自相矛盾是看截图才发现的，测试必须钉住它。
+        for light in (window._remote._light_ssh, window._remote._light_http,
+                      window._remote._light_tunnel):
+            assert "已禁用" in light._label.text(), f"灯没改口：{light._label.text()}"
+    finally:
+        window.shutdown()
+
+
+def test_reenabling_remote_bridge_restores_the_lock(qapp, data_dir):
+    """关得掉也要开得回来 —— 开关不是单程票。
+
+    用 `use_tunnel=False` 的配置：本用例只关心锁与摘要，不希望顺手拉起一条
+    真的去连 192.168.1.100 的 SSH 线程。
+    """
+    from usbswitch.core.models import Host
+    from usbswitch.ui.main_window import MainWindow
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.use_tunnel = False
+    window = MainWindow(config)
+    try:
+        window._on_remote_enabled_changed(False)
+        assert window._eject_lock_for(Host.B) is False
+
+        window._on_remote_enabled_changed(True)
+
+        assert window._eject_lock_for(Host.B) is True
+        assert "已禁用" not in window.section("remote").chip_text()
+        # 反向也要改口：重新启用后灯不能还挂着上一条「已禁用」
+        assert "已禁用" not in window._remote._light_ssh._label.text()
+        assert "已禁用" not in window._remote._light_http._label.text()
+    finally:
+        window.shutdown()
+
+
+def test_disabling_remote_bridge_is_persisted(qapp, data_dir):
+    """禁用要落盘 —— 否则重启程序后远程桥接又自己回来了，锁也跟着回来。"""
+    from usbswitch.ui.main_window import MainWindow
+
+    import usbswitch.core.config as config_module
+
+    config = _remote_config()
+    config.bridges[Host.B].remote.use_tunnel = False  # 同上：本用例不需要真隧道
+    window = MainWindow(config)
+    try:
+        window._on_remote_enabled_changed(False)
+    finally:
+        window.shutdown()
+
+    assert config_module.load().remote_bridge().enabled is False
 
 
 def test_opening_gui_does_not_touch_remote_config(qapp, data_dir):

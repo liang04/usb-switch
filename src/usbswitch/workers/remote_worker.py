@@ -77,7 +77,7 @@ class RemoteWorker(QObject):
 
     @property
     def target_host(self) -> Host | None:
-        """远程（Linux）桥接角色 —— 固定 Host B；未填写地址时为 None。"""
+        """远程（Linux）桥接角色 —— 固定 Host B；未启用或未填地址时为 None。"""
         return self._config.remote_host()
 
     def endpoint_title(self) -> str:
@@ -183,6 +183,15 @@ class RemoteWorker(QObject):
 
         bridge = self._bridge()
         if bridge is None:
+            # 面板在禁用时已把按钮置灰，正常走不到这里；这条兜底是给「禁用后
+            # 残留一次已排队的旧命令」用的 —— 那时若仍报「尚未配置远程主机」，
+            # 用户会去重填一个本来填对的地址。
+            if not self._config.remote_bridge().enabled:
+                self.operationFailed.emit(
+                    "远程桥接服务已禁用",
+                    "请在「远程桥接服务」区勾选「启用远程桥接」后重试",
+                )
+                return
             self.operationFailed.emit(
                 "尚未配置远程主机",
                 "请先在「远程桥接服务 → 配置…」中填写 IP / SSH 端口 / 用户名 / 密码",

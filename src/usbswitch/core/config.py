@@ -50,6 +50,7 @@ def _remote_to_dict(rc: RemoteBridgeConfig) -> dict[str, Any]:
     # 刻意逐字段列出，而不是 asdict()：`runtime_http_base` 是运行期状态，
     # 必须**不落盘**，逐字段列出天然把它挡在外面。
     return {
+        "enabled": rc.enabled,
         "host": rc.host,
         "ssh_port": rc.ssh_port,
         "username": rc.username,
@@ -77,6 +78,8 @@ def _remote_from_dict(data: dict[str, Any]) -> RemoteBridgeConfig:
             return ""
 
     return RemoteBridgeConfig(
+        # 缺省 True：老配置里没有这个键，语义是「配了就用」，与新增开关前一致
+        enabled=bool(data.get("enabled", True)),
         host=str(data.get("host", "")),
         ssh_port=int(data.get("ssh_port", DEFAULT_SSH_PORT)),
         username=str(data.get("username", "")),

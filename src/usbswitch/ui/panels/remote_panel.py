@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -27,6 +28,10 @@ from ..theme import THEME
 from ..widgets import ElidedLabel, StatusLight
 
 NOT_REMOTE_HINT = "点击「配置…」设置 Host B（Linux）的远程桥接 —— 配置后 Host B 安全弹出锁即启用"
+DISABLED_HINT = (
+    "远程桥接服务已禁用：Host B 切换前不再执行安全弹出，SSH 隧道与远程管理操作一并停用。"
+    "远端参数会保留，重新启用即恢复。"
+)
 
 
 class RemotePanel(QGroupBox):
@@ -38,12 +43,23 @@ class RemotePanel(QGroupBox):
     refreshRequested = Signal()
     #: 用户点了「配置…」→ 主窗口打开配置对话框
     configureRequested = Signal()
+    #: 总开关被用户切换 → 主窗口落盘并同步隧道 / 弹出锁
+    enabledChanged = Signal(bool)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__("远程桥接服务", parent)
         self._config = config
         self._busy = False
         self._ready = False
+
+        self._enable = QCheckBox("启用远程桥接")
+        self._enable.setToolTip(
+            "关闭后 Host B 视为「不使用远程桥接」：切换前不再要求安全弹出，\n"
+            "SSH 隧道自动停止，安装/启动/卸载等远程操作置灰。"
+        )
+        # 用 clicked 而不是 toggled：toggled 会被 refresh_target() 里的回填触发，
+        # 于是「刷新界面」变成「又写一次配置」，日志里会多出一串假变更记录。
+        self._enable.clicked.connect(self.enabledChanged.emit)
 
         self._target = ElidedLabel("")
         self._target.setObjectName("SectionSummary")
@@ -54,6 +70,7 @@ class RemotePanel(QGroupBox):
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
+        toolbar.addWidget(self._enable)
         toolbar.addWidget(self._target, 1)
         toolbar.addWidget(self._btn_configure)
 
@@ -124,8 +141,23 @@ class RemotePanel(QGroupBox):
             return []
         return self._config.endpoint_for(host).remote.validate()
 
+    def is_enabled(self) -> bool:
+        """总开关的配置值（不是控件的勾选态）。"""
+        return self._config.remote_bridge().enabled
+
     def refresh_target(self) -> None:
-        """按配置刷新目标摘要与按钮可用性。配置改完必须调一次。"""
+        """按配置刷新开关、目标摘要与按钮可用性。配置改完必须调一次。"""
+        self._refresh_enable()
+        remote = self._config.remote_bridge()
+
+        if not remote.enabled:
+            where = remote.host.strip() or "未填地址"
+            self._target.setText(f"已禁用 · Host B · {where}")
+            self._set_hint(DISABLED_HINT, THEME["warning"])
+            self._ready = False
+            self._apply_interactivity()
+            return
+
         host = self._config.remote_host()
         if host is None:
             self._target.setText("Host B 未配置远程桥接")
@@ -134,7 +166,6 @@ class RemotePanel(QGroupBox):
             self._apply_interactivity()
             return
 
-        remote = self._config.endpoint_for(host).remote
         name = remote.display_name or remote.host or "未填写地址"
         user = remote.username or "未填用户名"
         where = remote.host or "未填地址"
@@ -160,6 +191,9 @@ class RemotePanel(QGroupBox):
     # ------------------------------------------------------------ 状态 #
 
     def apply_state(self, state: RemoteState) -> None:
+        if not self._config.remote_bridge().enabled:
+            self._set_lights_idle("—（远程桥接服务已禁用）")
+            return
         if self._config.remote_host() is None:
             self._set_lights_idle("—（未配置远程桥接）")
             return
@@ -200,6 +234,9 @@ class RemotePanel(QGroupBox):
         读的是**配置里**的隧道开关，不是某个控件 —— 否则关掉配置窗口后
         这盏灯就失去了判断依据。
         """
+        if not self._config.remote_bridge().enabled:
+            self._light_tunnel.set_state("SSH 隧道  —（远程桥接服务已禁用）", THEME["idle"])
+            return
         host = self._config.remote_host()
         if host is None:
             self._light_tunnel.set_state("SSH 隧道  —（未配置远程桥接）", THEME["idle"])
@@ -219,6 +256,30 @@ class RemotePanel(QGroupBox):
 
     # ------------------------------------------------------------ 可用性 #
 
+    def refresh_lights(self) -> None:
+        """按配置把三盏灯重画到「本轮尚未探测」的起始态。
+
+        总开关刚切换时必须调它。新一轮探测结果要等最多一个轮询周期才回来，
+        不重画的话灯会停在切换前的旧内容上 —— 分区头写着「已禁用」，灯却显示
+        「在线」，同一个分区里自相矛盾；反过来刚启用时灯还挂着「已禁用」。
+
+        注意「还没探测」与「探测到不可达」是两件事：前者是 idle 灰灯，后者才是
+        红灯。所以这里给的是 idle 文案，不是失败文案。
+        """
+        remote = self._config.remote_bridge()
+        if not remote.enabled:
+            self._set_lights_idle("—（远程桥接服务已禁用）")
+            return
+        if self._config.remote_host() is None:
+            self._set_lights_idle("—（未配置远程桥接）")
+            return
+
+        # 配置变了，旧的探测结论一律作废：SSH 与 HTTP 回到「未检测」，
+        # 隧道则由 apply_tunnel 按最新的配置与运行态重新表述
+        self._light_ssh.set_state("SSH  未检测（点击「刷新」探测）", THEME["idle"])
+        self._light_http.set_state("桥接服务  未检测", THEME["idle"])
+        self.apply_tunnel(BridgeRunState.STOPPED)
+
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
         self._apply_interactivity()
@@ -226,10 +287,22 @@ class RemotePanel(QGroupBox):
     def _apply_interactivity(self) -> None:
         # 安装 / 启动期间不允许改配置 —— 边装边改会让「装的是哪一版」变得含糊
         self._btn_configure.setEnabled(not self._busy)
+        # 总开关**不随 `_ready` 置灰**：禁用之后它就是唯一能把服务重新打开的
+        # 入口，跟着一起灰掉用户就再也回不来了
+        self._enable.setEnabled(not self._busy)
         for button in self._ops:
             button.setEnabled(self._ready and not self._busy)
 
     # ------------------------------------------------------------ 内部 #
+
+    def _refresh_enable(self) -> None:
+        """把配置里的启用状态回填到勾选框。
+
+        回填时**不触发** `enabledChanged`（信号接的是 `clicked`，而这里是
+        `setChecked`）—— 否则每次刷新目标摘要都会再写一次配置，日志里凭空多出
+        一串「远程桥接服务已启用」，用户会以为自己在反复误触。
+        """
+        self._enable.setChecked(self._config.remote_bridge().enabled)
 
     def _set_hint(self, text: str, color: str) -> None:
         self._hint.setText(text)

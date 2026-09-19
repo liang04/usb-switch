@@ -139,6 +139,53 @@ def test_remote_host_is_none_until_address_is_filled(data_dir: Path):
     assert cfg.remote_host() is None, "空白地址不能算配置过"
 
 
+def test_disabled_remote_bridge_counts_as_not_in_use(data_dir: Path):
+    """总开关关掉后「远程桥接」整体不参与工作 —— 即使地址填得完整。
+
+    这是本功能的核心语义：禁用**不是**清除配置，而是让远程桥接停止参与
+    弹出锁 / 隧道 / 远程操作的判断。所以两个断言必须同时成立 ——
+    `remote_host()` 变 None（停用），而配置字段原封不动（没被清）。
+    """
+    cfg = AppConfig()
+    cfg.bridges[Host.B].remote.host = "192.168.0.1"
+    assert cfg.remote_host() is Host.B
+
+    cfg.bridges[Host.B].remote.enabled = False
+
+    assert cfg.remote_host() is None, "禁用后 Host B 的安全弹出锁必须一并关闭"
+    assert cfg.remote_bridge().host == "192.168.0.1", "禁用不该把配置一起吃掉"
+    assert cfg.remote_bridge().is_configured is True
+
+
+def test_enabled_flag_missing_in_old_config_defaults_to_true(data_dir: Path):
+    """老配置里没有 enabled 键 —— 缺省必须是 True。
+
+    若缺省成 False，升级到本版本后所有用户的远程桥接会被**静默停用**：
+    不弹盘、隧道不起，而界面上没有任何「我刚关了它」的操作痕迹。
+    """
+    path = data_dir / "config.json"
+    path.write_text(
+        json.dumps({"bridges": {"B": {"remote": {"host": "192.168.1.100"}}}}),
+        encoding="utf-8",
+    )
+
+    loaded = config.load(path)
+
+    assert loaded.remote_bridge().enabled is True
+    assert loaded.remote_host() is Host.B
+
+
+def test_enabled_flag_roundtrips(data_dir: Path):
+    path = data_dir / "config.json"
+    cfg = _remote_config()
+    cfg.bridges[Host.B].remote.enabled = False
+
+    config.save(cfg, path)
+
+    assert config.load(path).remote_bridge().enabled is False
+    assert '"enabled": false' in path.read_text(encoding="utf-8")
+
+
 def test_newer_schema_version_is_rejected(data_dir: Path):
     path = data_dir / "config.json"
     path.write_text(json.dumps({"version": 999}), encoding="utf-8")

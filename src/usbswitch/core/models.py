@@ -145,6 +145,14 @@ class RemoteBridgeConfig:
     - ``bridge_port`` 远端桥接服务的 HTTP 监听端口，用于安全弹出与探活
     """
 
+    #: 远程桥接服务总开关。关闭后「Host B 有远程桥接」这件事整体不成立：
+    #: 切换前不再在 Host B 上安全弹出、SSH 隧道自动停、远程管理操作置灰。
+    #:
+    #: 注意它与「还没填地址」**不是一回事**，界面上必须分得开：一项是用户
+    #: 主动关掉的，一项是压根没配。两者都让 :meth:`AppConfig.remote_host`
+    #: 返回 None，但文案完全不同（禁用说「已禁用」，未配说「未配置」）——
+    #: 混起来会让用户以为自己的配置被程序吃掉了。
+    enabled: bool = True
     host: str = ""
     ssh_port: int = DEFAULT_SSH_PORT
     username: str = ""
@@ -319,14 +327,33 @@ class AppConfig:
         """取某个 Host 角色的桥接端点，缺失时给一个安全的默认值。"""
         return self.bridges.get(host) or BridgeEndpoint()
 
+    def remote_bridge(self) -> RemoteBridgeConfig:
+        """Host B 的远程桥接配置 —— **不看启用与否**。
+
+        :meth:`remote_host` 回答「现在要不要用远程桥接」，这里回答
+        「远程桥接被配成了什么样」。界面需要在禁用状态下仍然显示/编辑那些
+        参数，因此必须有一个不受 ``enabled`` 影响的入口。
+        """
+        return self.endpoint_for(Host.B).remote
+
     def remote_host(self) -> "Host | None":
-        """远程（Linux）桥接角色 —— 固定为 Host B；未填写地址时返回 None。
+        """远程（Linux）桥接角色 —— 固定为 Host B；None 表示「远程桥接当前不参与工作」。
+
+        两种情形都返回 None，但**必须区分**（界面文案不同）：
+
+        - 用户把远程桥接服务**禁用**了（``RemoteBridgeConfig.enabled`` 为 False）
+        - 还没填远端地址（``is_configured`` 为 False）
 
         「哪个角色是远程」已不可配置，这个方法保留的职责是回答
-        **「远程桥接是否已配置」**—— UI 与 worker 的判据都收敛在这里，
-        避免各自检查字段出现口径不一。
+        **「远程桥接现在要不要用」**—— 安全弹出锁、SSH 隧道、远程管理操作、
+        状态灯全部收敛到这一个判据，避免各处自查字段出现口径不一。
+        禁用开关之所以挂在这里，就是为了让「关掉它」自动等于「上述四件事
+        一并停掉」，而不必在四处各加一个 if。
         """
-        remote = self.bridges.get(Host.B)
-        if remote is None or not remote.remote.is_configured:
+        endpoint = self.bridges.get(Host.B)
+        if endpoint is None:
+            return None
+        remote = endpoint.remote
+        if not remote.enabled or not remote.is_configured:
             return None
         return Host.B

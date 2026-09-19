@@ -180,9 +180,13 @@ def _check_config() -> str:
     from usbswitch.core import config as config_module
 
     cfg = config_module.load()
+    remote = cfg.remote_bridge()
     remote_host = cfg.remote_host()
     if remote_host is None:
-        return "配置读取正常（未配置远程主机）"
+        # 「禁用」与「未配置」在自检里也要分得开，否则用户看到一句
+        # 「未配置远程主机」会去反复重填一个本来填对了的地址
+        reason = "已禁用" if not remote.enabled else "未配置"
+        return f"配置读取正常（远程桥接{reason}）"
 
     remote = cfg.endpoint_for(remote_host).remote
     return (
@@ -403,7 +407,8 @@ def _check_tunnel() -> str:
     cfg = config_module.load()
     host = cfg.remote_host()
     if host is None:
-        return "未配置远程主机，跳过"
+        reason = "已禁用" if not cfg.remote_bridge().enabled else "未配置"
+        return f"远程桥接{reason}，跳过"
     remote = cfg.endpoint_for(host).remote
     if not remote.use_tunnel:
         return "隧道已关闭，跳过"

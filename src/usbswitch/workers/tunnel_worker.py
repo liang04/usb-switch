@@ -151,10 +151,14 @@ class TunnelWorker(QObject):
         self.stateChanged.emit(BridgeRunState.STOPPED)
 
     def _clear_runtime_base(self) -> None:
-        host = self._remote_host()
-        if host is None:
-            return
-        remote = self._remote(host)
+        """清掉可能残留的隧道地址。
+
+        **刻意不走 `remote_host()`**：远程桥接被禁用时它返回 None，而禁用恰恰是
+        最需要抹掉隧道地址的时刻 —— 否则用户重新启用后，`http_base` 会短暂指向
+        一个已经关掉的本地端口，表现为「刚打开就说桥接不可达」。
+        这里问的是「远程桥接被配成了什么样」，不是「现在要不要用」。
+        """
+        remote = self._remote(Host.B)
         if remote.runtime_http_base:
             remote.runtime_http_base = ""
 
