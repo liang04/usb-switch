@@ -22,8 +22,15 @@ import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8738
+DEFAULT_PORT = 8738
 HOST = "0.0.0.0"
+
+#: 实际监听端口。默认值可被 __main__ 里的命令行参数覆盖。
+#:
+#: 注意：**不要**在模块级解析 ``sys.argv`` —— 那样这个文件就无法被 import
+#: （测试要把它和 Windows 端实现跑起来比对契约），而且 import 一个模块
+#: 不应该有「读命令行」这种副作用。
+PORT = DEFAULT_PORT
 
 
 def usb_disks() -> list:
@@ -133,6 +140,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        try:
+            PORT = int(sys.argv[1])
+        except ValueError:
+            print(f"端口必须是数字: {sys.argv[1]!r}")
+            raise SystemExit(64)
+
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"USB-Switch Linux 桥接服务已启动: http://{HOST}:{PORT}", flush=True)
     try:

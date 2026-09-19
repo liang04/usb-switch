@@ -18,16 +18,31 @@
 """
 
 import asyncio
-import os
-import subprocess
 import sys
-import time
+from pathlib import Path
 
-from bleak import BleakClient, BleakScanner
+# 磁盘检测与安全弹出统一转发到 usbswitch.core.disk。
+#
+# 原实现每次调用都要 spawn 一个 PowerShell 进程（实测单次约 6.6 秒），
+# 既拖慢轮询，又会让弹出误判失败。core.disk 用 ctypes 直调 Win32（毫秒级），
+# 弹出则走「锁定 + 卸载卷」的原生序列。这里保留同名函数，调用方无感。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-if not os.path.exists(POWERSHELL):
-    POWERSHELL = "powershell"  # 回退到 PATH 查找
+from usbswitch.core import disk as _disk  # noqa: E402
+from usbswitch.core.errors import (  # noqa: E402
+    EjectError,
+    MultipleRemovableDrivesError,
+    NoRemovableDriveError,
+    UsbSwitchError,
+)
+
+# bleak 只在真正需要 BLE 切换时才导入，避免被无关依赖拖累。
+try:
+    from bleak import BleakClient, BleakScanner
+    _BLEAK_IMPORT_ERROR = None
+except ImportError as e:
+    BleakClient = BleakScanner = None
+    _BLEAK_IMPORT_ERROR = e
 
 # 如果电脑上会同时插多个可移动磁盘，在这里固定盘符，例如 "E"
 # 保持 None 表示自动检测（仅当检测到恰好一个可移动磁盘时才继续）
@@ -38,64 +53,36 @@ SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
-EJECT_TIMEOUT = 20  # 等待弹出完成的秒数
-
-
-def run_ps(script: str) -> str:
-    r = subprocess.run(
-        [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True, text=True, timeout=30,
-    )
-    return (r.stdout or "").strip()
-
 
 def list_removable_drives() -> list:
-    """返回所有可移动磁盘的盘符列表，如 ['E']"""
-    out = run_ps(
-        "(Get-Volume | Where-Object {$_.DriveType -eq 'Removable' "
-        "-and $_.DriveLetter} | Select-Object -ExpandProperty DriveLetter) -join ','"
-    )
-    return [d for d in out.split(",") if d] if out else []
+    """返回所有可移动磁盘的盘符列表，如 ['E']。毫秒级。"""
+    return _disk.removable_drives()
 
 
 def resolve_target_drive() -> str:
-    drives = list_removable_drives()
-    if TARGET_DRIVE:
-        letter = TARGET_DRIVE.upper()
-        if letter not in drives:
-            raise RuntimeError(f"配置的盘符 {letter}: 当前不存在或不是可移动磁盘")
-        return letter
-    if len(drives) == 0:
-        raise RuntimeError("未检测到可移动 U 盘（可能已被弹出）")
-    if len(drives) > 1:
-        raise RuntimeError(
-            f"检测到多个可移动磁盘 {drives}，无法确定目标。"
-            "请修改脚本顶部的 TARGET_DRIVE 固定盘符"
-        )
-    return drives[0]
+    try:
+        return _disk.resolve_target(TARGET_DRIVE)
+    except MultipleRemovableDrivesError as exc:
+        raise RuntimeError(f"{exc.message}。请修改脚本顶部的 TARGET_DRIVE 固定盘符") from exc
+    except NoRemovableDriveError as exc:
+        raise RuntimeError(exc.message) from exc
 
 
 def eject_drive(letter: str) -> None:
     print(f"正在弹出 {letter}: 盘 ...")
-    run_ps(
-        f"$s = New-Object -ComObject Shell.Application;"
-        f"$s.Namespace(17).ParseName('{letter}:').InvokeVerb('Eject')"
-    )
-    # 轮询确认盘符消失
-    deadline = time.time() + EJECT_TIMEOUT
-    while time.time() < deadline:
-        if letter not in list_removable_drives():
-            print(f"{letter}: 盘已安全弹出。")
-            return
-        time.sleep(0.5)
-    raise RuntimeError(
-        f"等待 {EJECT_TIMEOUT} 秒后 {letter}: 盘仍未弹出。"
-        "可能有程序正在占用 U 盘（资源管理器窗口、杀软扫描等）。"
-        "已中止切换，VBUS 保持不变。"
-    )
+    try:
+        _disk.eject(letter)
+    except EjectError as exc:
+        raise RuntimeError(str(exc)) from exc
+    print(f"{letter}: 盘已安全弹出。")
 
 
 async def ble_switch(cmd: str) -> bool:
+    if _BLEAK_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            f"缺少 BLE 依赖 bleak（{_BLEAK_IMPORT_ERROR}）。"
+            "切换蓝牙需要它，请先执行: pip install bleak"
+        )
     print(f"正在连接 {DEVICE_NAME} ...")
     device = await BleakScanner.find_device_by_filter(
         lambda d, adv: SERVICE_UUID in [u.lower() for u in adv.service_uuids]
@@ -162,6 +149,6 @@ if __name__ == "__main__":
 
     try:
         sys.exit(asyncio.run(main(args[0].lower(), do_eject=not no_eject)))
-    except RuntimeError as e:
+    except (RuntimeError, UsbSwitchError) as e:
         print(f"错误: {e}", file=sys.stderr)
         sys.exit(1)

@@ -1,9 +1,19 @@
 # 构建产物（可重新编译生成）
 build/
+dist/
+# 重建前腾位置用的备份目录
+# 注意：gitignore 不支持行尾注释，注释必须独占一行，否则整行会被当成模式
+dist_prev*/
+build/prev-dist*/
+*.egg-info/
 
-# Python 缓存
+# Python 虚拟环境与缓存
+.venv/
+venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 
 # 本地工具链（约 54 MB，安装方法见 README「固件编译与烧写」）
 tools/
@@ -13,3 +23,15 @@ tools/
 .agents/
 *.log
 tmp/
+
+# 本机开发记忆（含真机 IP / 主机名 / 密钥路径等环境信息，不进仓库）
+.workbuddy/
+
+# 临时验证脚本（真机端到端验证用，跑完即删）
+tmp_*
+ver_*
+
+# 构建时现场生成的构建清单（usbswitch.spec → packaging/_build.json）
+packaging/_build.json
+build_run*/
+build_*/
