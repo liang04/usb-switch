@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "usbswitch"
+description = "USB-A 双主机 U 盘切换器 — Windows 桌面客户端"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    # 用 Essentials 而不是 PySide6 元包：元包会额外拉进 168 MB 的 Addons
+    # （Qt3D / QtCharts / QtWebEngine …），而本项目只用到 QtCore / QtGui /
+    # QtWidgets / QtNetwork，全部都在 Essentials 里。
+    "PySide6-Essentials>=6.6",
+    "bleak>=0.21",
+    "paramiko>=3.4",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+# 开发与构建所需的一切：测试、静态检查、打包
+dev = ["pytest>=8.0", "ruff>=0.5", "pyinstaller>=6.0"]
+
+[project.gui-scripts]
+usbswitch = "usbswitch.main:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "usbswitch.version.__version__" }
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+usbswitch = ["resources/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+# `F` 里最重要的是 F821（引用了不存在的名字）—— 踩过一次：
+# 重构删掉了常量，却漏了一处引用，而那句因为 `or` 短路在测试里从不被求值，
+# 于是「第二次启动必崩」的 bug 一路绿灯。静态检查是唯一能提前拦住它的手段。
+select = ["F", "E9"]
