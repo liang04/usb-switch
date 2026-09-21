@@ -2043,3 +2043,221 @@ def test_build_marker_matches_current_process(qapp, data_dir):
         assert window._status_bar.build_text() == build_info.current().short()
     finally:
         window.shutdown()
+
+
+# --------------------------------------------------------------------------- #
+# 窗口高度自适应
+# --------------------------------------------------------------------------- #
+
+
+def _collapsed_window(qapp, data_dir, config=None):
+    """建一个「全折叠」的窗口并显示出来。
+
+    `show()` 不能省 —— 首次定高在 `showEvent` 里做，而且布局要跑完才量得准。
+    """
+    from usbswitch.core.models import AppConfig, SECTION_IDS
+    from usbswitch.ui.main_window import MainWindow
+
+    cfg = config if config is not None else AppConfig()
+    cfg.window.expanded_sections = {key: False for key in SECTION_IDS}
+    window = MainWindow(cfg)
+    window.show()
+    for _ in range(8):
+        qapp.processEvents()
+    return window
+
+
+def test_window_height_shrinks_to_fit_collapsed_content(qapp, data_dir):
+    """全部折叠时窗口要**贴着内容**，不留一大片空白。
+
+    改动前高度是写死的 760，而折叠态内容只有 300 多像素，下方空一大块。
+    断言写成 `高度 == 内容需要的高度` 而不是某个像素值 —— 字体、DPI、
+    平台（offscreen 没有字体库、行高更小）都会让绝对值不同，但等式恒成立。
+    """
+    from usbswitch.ui.main_window import WINDOW_MIN_HEIGHT
+
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        assert window.height() == window._content_height()
+        assert window.height() >= WINDOW_MIN_HEIGHT
+    finally:
+        window.shutdown()
+
+
+def test_window_height_grows_then_shrinks_with_sections(qapp, data_dir):
+    """展开分区变高、收起变矮。
+
+    这条盯的是「收缩」—— 09-21 实测过：只跑一轮事件，`setVisible` 引发的
+    布局还没铺开，量到的是**中间态**（1152），clamp 后恰好等于当前高度，
+    于是窗口永远停在展开时的高度缩不回去。
+    """
+    from usbswitch.core.models import SECTION_IDS
+
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        collapsed = window.height()
+
+        for key in SECTION_IDS:
+            window.section(key).toggle()
+        for _ in range(8):
+            qapp.processEvents()
+        expanded = window.height()
+        assert expanded > collapsed, "展开后窗口没有变高"
+
+        for key in SECTION_IDS:
+            window.section(key).toggle()
+        for _ in range(8):
+            qapp.processEvents()
+        assert window.height() == collapsed, "折叠回去后高度没有复原"
+    finally:
+        window.shutdown()
+
+
+def test_window_height_never_exceeds_the_cap(qapp, data_dir):
+    """内容再多也不超过上限 —— 超出部分交给滚动区。"""
+    from usbswitch.core.models import SECTION_IDS
+
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        cap = window._max_window_height()
+        assert window.maximumHeight() == cap
+        for key in SECTION_IDS:
+            window.section(key).toggle()
+        for _ in range(8):
+            qapp.processEvents()
+        assert window.height() <= cap
+        # 全部展开的内容一定高于上限，所以必然顶到上限（而不是停在中间值）
+        assert window.height() == cap
+    finally:
+        window.shutdown()
+
+
+def test_window_height_cap_follows_screen_not_a_constant(qapp, data_dir):
+    """上限取屏幕可用高度的一定比例，不是一个写死的像素。
+
+    写死像素在 1366×768 的机器上会算出比屏幕还高的窗口。
+    """
+    from usbswitch.ui.main_window import (
+        WINDOW_MAX_HEIGHT_FLOOR,
+        WINDOW_MAX_HEIGHT_RATIO,
+    )
+
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        screen = qapp.primaryScreen()
+        expected = int(screen.availableGeometry().height() * WINDOW_MAX_HEIGHT_RATIO)
+        assert window._max_window_height() == max(expected, WINDOW_MAX_HEIGHT_FLOOR)
+    finally:
+        window.shutdown()
+
+
+def test_manual_resize_takes_over_from_auto_height(qapp, data_dir):
+    """用户自己拉过高度之后，程序不再自动改。
+
+    否则「点开一个分区」会把他刚调好的窗口高度抢走。
+    """
+    from usbswitch.core.models import SECTION_IDS
+
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        window.resize(700, 500)
+        for _ in range(4):
+            qapp.processEvents()
+        assert window._size_is_user_owned
+
+        for key in SECTION_IDS:
+            window.section(key).toggle()
+        for _ in range(8):
+            qapp.processEvents()
+        assert window.height() == 500, "用户定过高度后不该被自动调整"
+        assert window.width() == 700
+    finally:
+        window.shutdown()
+
+
+def test_restored_geometry_counts_as_user_sized(qapp, data_dir):
+    """配置里存着上次的几何 = 用户定过尺寸，启动时不该被自适应改掉。
+
+    这条防的是「用户把窗口调成自己喜欢的大小，下次启动又被算法改回去」。
+    """
+    from usbswitch.core import config as config_module
+    from usbswitch.core.models import AppConfig
+    from usbswitch.ui.main_window import MainWindow
+
+    path = data_dir / "config.json"
+
+    first = MainWindow(AppConfig())
+    first.resize(700, 560)
+    for _ in range(4):
+        qapp.processEvents()
+    first._save_geometry()
+    first.shutdown()
+    config_module.save(first._config, path)
+
+    second = MainWindow(config_module.load(path))
+    second.show()
+    for _ in range(8):
+        qapp.processEvents()
+    try:
+        assert second._size_is_user_owned, "恢复的几何没有被认作「用户定过尺寸」"
+        assert second.height() == 560
+    finally:
+        second.shutdown()
+
+
+def test_auto_height_is_idempotent_after_settling(qapp, data_dir):
+    """收敛之后不再反复排定高 —— 否则会变成无休止的重排。
+
+    连点四个分区（切四次）后，窗口必须停在「内容需要的高度」上，且
+    `_fit_pending` 已清空（没有悬着的回调）。
+    """
+    from usbswitch.core.models import SECTION_IDS
+
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        for _ in range(4):
+            window.section("log").toggle()
+            for _ in range(6):
+                qapp.processEvents()
+        assert not window._fit_pending, "定高请求没有收敛"
+        assert window.height() == window._content_height()
+        assert all(not window.section(k).is_expanded() for k in SECTION_IDS)
+    finally:
+        window.shutdown()
+
+
+def test_auto_height_does_not_hijack_the_width(qapp, data_dir):
+    """自适应只动高度，宽度保持用户给的值。"""
+    from usbswitch.core.models import SECTION_IDS
+
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        # 先固定宽度（这一步会交出尺寸控制权，所以之后手动调一次高度回去）
+        window.resize(640, window.height())
+        for _ in range(4):
+            qapp.processEvents()
+        width = window.width()
+
+        # 直接走内部方法，绕开「用户拥有尺寸」的短路，单验宽度不受影响
+        window._size_is_user_owned = False
+        for key in SECTION_IDS:
+            window.section(key).toggle()
+        for _ in range(8):
+            qapp.processEvents()
+        assert window.width() == width, "宽度被自适应改掉了"
+    finally:
+        window.shutdown()
+
+
+def test_show_event_does_not_mark_size_as_user_owned(qapp, data_dir):
+    """`show()` 自己触发的 resizeEvent 不能被当成「用户调过尺寸」。
+
+    09-21 第一版就这么错的：首次显示量出该是 404，实际停在 610 且从此不再
+    跟随 —— `show()` 引发的窗口管理器调整把所有权标志置了真。
+    """
+    window = _collapsed_window(qapp, data_dir)
+    try:
+        assert not window._size_is_user_owned
+        assert not window._auto_resizing, "显示完成后应已交还控制权"
+    finally:
+        window.shutdown()

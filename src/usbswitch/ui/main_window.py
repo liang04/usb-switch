@@ -59,6 +59,21 @@ log = logging.getLogger(__name__)
 
 BRIDGE_POLL_INTERVAL_MS = 5000
 
+#: 窗口尺寸自适应的下限与上限。
+#:
+#: 高度随「哪些分区展开着」变化：全折叠时内容只有 ~330px，若仍按固定的 760
+#: 开窗，下方会空出一大片。上限不写死像素而是取**屏幕可用高度的比例** ——
+#: 在 1366×768 的笔记本上 900px 就已经超出屏幕了。
+WINDOW_MIN_WIDTH = 620
+WINDOW_MIN_HEIGHT = 380
+WINDOW_MAX_HEIGHT_RATIO = 0.80
+#: 即便按比例算出来的上限也不低于这个值，否则小屏幕上连折叠态都装不下。
+WINDOW_MAX_HEIGHT_FLOOR = 640
+
+#: 「按内容定高」最多连排几轮。布局要跨两轮事件才稳定，但也不能无限排 ——
+#: 一旦某次布局恰好自激（改高 → 重排 → 又要求改高），没有这个上限就是死循环。
+_FIT_MAX_ROUNDS = 3
+
 #: 远程配置改动后，等这么久再把变更同步到隧道。
 #: 隧道绑定在具体目标上，改目标必须重建；但**每个按键**都重建一次是荒唐的 ——
 #: 输入一个 IP 地址会触发十几次 SSH 连接建立与拆除。合并成一次。
@@ -92,9 +107,31 @@ class MainWindow(QMainWindow):
         self._bridge_alerted = False
         #: 当前打开的远程配置对话框（同一时刻只允许一个）
         self._remote_dialog: RemoteConfigDialog | None = None
+        #: 用户是否自己定过窗口尺寸。
+        #: 一旦为 True，折叠/展开就**不再**自动改高度 —— 用户把窗口拉成什么
+        #: 样是他自己的决定，程序不该在他点开一个分区时把尺寸拽回去。
+        #: 恢复过保存的几何即视为「定过」。
+        self._size_is_user_owned = False
+        #: 这次 resize 是不是我们自己请求的。构造期与自适应都置真 ——
+        #: 否则 ``resize(760, 760)`` 会被 ``resizeEvent`` 当成「用户调过尺寸」，
+        #: 自适应从此永久失效。
+        self._auto_resizing = True
+        #: 首次显示只定高一次，之后一切尺寸变化都算用户操作
+        self._first_show_done = False
+        #: 已排入队列的「按内容定高」请求（合并同一轮内的多次折叠/展开）
+        self._fit_pending = False
+        #: 上一轮量到的原始内容高度，用来判断布局是否已经稳定
+        self._last_fit_target = -1
+        #: 当前这一轮定高已经重排了几次
+        self._fit_rounds = 0
+        #: 内容载体，`_build_ui` 里装配。自适应高度要用它们量内容尺寸。
+        self._scroll: QScrollArea | None = None
+        self._body: QWidget | None = None
 
         self.setWindowTitle("USB Switch Console")
         self.setWindowIcon(app_icon())
+        self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+        self.setMaximumHeight(self._max_window_height())
         self.resize(760, 760)
         self._restore_geometry()
 
@@ -146,6 +183,32 @@ class MainWindow(QMainWindow):
 
         self._poll_bridges()
 
+        # 首次定高**不能放在这里**：`show()` 之前布局还没跑完，量出来的
+        # chrome 是错的（实测构造期 460 / show 后 404），而且 `resize()` 在
+        # 窗口显示前会被窗口管理器覆盖掉。统一挪到 `showEvent` 里做一次。
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """首次显示：按当前内容定高，然后交出尺寸控制权。
+
+        `show()` 本身会触发一次 resizeEvent（窗口管理器给默认尺寸），所以
+        这次定高与随后那一轮事件都必须待在「自动」状态里，否则会被误判成
+        用户操作、自适应从此失效。
+
+        两条路都要排那个 `singleShot`：有历史几何时虽然不定高，`_auto_resizing`
+        也还停在构造期的 True，不放开的话用户第一次拖窗口就不算数。
+        """
+        super().showEvent(event)
+        if self._first_show_done:
+            return
+        self._first_show_done = True
+        # fit（若需要）与 release 都排进同一轮，FIFO 保证先量高、后放权
+        self._fit_height_to_content()
+        QTimer.singleShot(0, self._release_auto_resize)
+
+    def _release_auto_resize(self) -> None:
+        """事件循环跑起来之后的 resize 才算用户操作。"""
+        self._auto_resizing = False
+
     # -- 构建 --------------------------------------------------------------- #
 
     def _build_ui(self) -> None:
@@ -192,6 +255,8 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setWidget(body)
+        self._scroll = scroll
+        self._body = body
 
         self._status_bar = StatusBar()
 
@@ -304,10 +369,132 @@ class MainWindow(QMainWindow):
     def _on_section_toggled(self, key: str, expanded: bool) -> None:
         self._config.window.expanded_sections[key] = expanded
         self._save_config()
+        self._fit_height_to_content()
 
     def section(self, key: str) -> CollapsibleSection:
         """按 id 取分区（测试与主窗口内部使用）。"""
         return self._sections[key]
+
+    # -- 尺寸自适应 --------------------------------------------------------- #
+
+    def _max_window_height(self) -> int:
+        """窗口高度的上限：屏幕可用高度的 80%，且不低于折叠态能装下的量。
+
+        取比例而不是写死像素，是因为 1366×768 的小屏上固定 900 就超出屏幕了。
+        取可用区（``availableGeometry``）而不是全屏几何 —— 后者包含任务栏，
+        按它算出来的窗口会被任务栏盖住一截。
+
+        优先用**窗口所在的那块屏**：多显示器下取主屏会算出与实际不搭的上限
+        （副屏比主屏矮时窗口能超出副屏底边）。窗口还没上屏时回落到主屏。
+        """
+        app = QApplication.instance()
+        screen = None
+        if app is not None:
+            handle = self.windowHandle()
+            screen = handle.screen() if handle is not None else None
+            if screen is None:
+                screen = app.primaryScreen()
+        if screen is None:
+            return WINDOW_MAX_HEIGHT_FLOOR
+        available = screen.availableGeometry().height()
+        return max(int(available * WINDOW_MAX_HEIGHT_RATIO), WINDOW_MAX_HEIGHT_FLOOR)
+
+    def _content_height(self) -> int:
+        """量出「装下当前所有可见内容」需要的窗口高度。
+
+        用滚动区内容的 ``sizeHint``（**不是** ``height()``）—— 布局末尾有个
+        ``addStretch(1)``，它把内容顶满滚动区，所以 ``height()`` 永远等于
+        当前窗口给的额度，量不出「内容本来多高」。``sizeHint`` 不含 stretch，
+        实测与 ``layout().totalSizeHint()`` 一致（09-21 验证：全折叠 330、
+        全展开 1143）。
+        """
+        body = self._body
+        if body is None:
+            return self.height()
+        layout = body.layout()
+        content = max(
+            body.sizeHint().height(),
+            layout.totalSizeHint().height() if layout is not None else 0,
+        )
+        # 窗口里不属于滚动区的部分：设备条 + 状态栏 + 中央区上下边距。
+        # **不能用 `self.height() - self._scroll.height()`** —— 窗口还没显示
+        # 或刚改过尺寸时这两个值都不可靠（09-21 实测：showEvent 里量出 610，
+        # 而同一份内容 show 完是 404，差的那 206 全是残值）。
+        # 逐控件取 sizeHint 与窗口当前高度无关，任何时刻都算得对。
+        chrome = (
+            self._device.sizeHint().height()
+            + self._status_bar.sizeHint().height()
+        )
+        return content + chrome
+
+    def _fit_height_to_content(self) -> None:
+        """排一次「按内容定高」。延迟到事件循环下一回合真正执行。
+
+        **为什么必须延迟**：本方法由分区折叠/展开触发，而 ``set_expanded``
+        只是 ``setVisible()`` —— 布局要到 Qt 处理完这轮事件才重排。当场量
+        ``sizeHint`` 拿到的还是**变更前**的高度，于是「全展开 → 全折叠」
+        收缩不回去（09-21 实测：content 已算出 404，窗口却停在 825；手动再
+        调一次就成了）。合并多次请求也只执行一次，连点五个分区不会抖五下。
+        """
+        if self._size_is_user_owned or self._body is None:
+            return
+        if self._fit_pending:
+            return
+        self._fit_pending = True
+        self._fit_rounds = 0
+        QTimer.singleShot(0, self._apply_fitted_height)
+
+    def _apply_fitted_height(self) -> None:
+        """真正把窗口高度调到位。见 :meth:`_fit_height_to_content` 的说明。
+
+        **要连排几轮才对，因为一轮量不准。** ``setVisible`` 引发的布局是逐级
+        铺开的：父容器先按旧尺寸重排，子控件要到下一轮才把新尺寸报上来。
+        09-21 实测「全展开 → 全折叠」时第一轮量到 **1152**（五个分区刚隐藏、
+        布局还没算完），clamp 到当前高度 825 后等于现高 → 若此时就收手，
+        窗口永远停在 825 缩不回去。
+
+        所以收敛判据是**原始内容高度**（clamp 之前）连续两轮一致，而不是
+        「算出来的目标等于当前高度」—— 后者会被中间态恰好命中。
+        """
+        self._fit_pending = False
+        if self._size_is_user_owned or self._body is None:
+            return
+
+        content = self._content_height()
+        settled = content == self._last_fit_target
+        self._last_fit_target = content
+
+        target = max(content, WINDOW_MIN_HEIGHT)
+        target = min(target, self._max_window_height())
+        if target != self.height():
+            # 只改高，宽度保持当前值。
+            # 自己这次 resize 也会触发 resizeEvent，前后套上自动标志 ——
+            # 运行期 _auto_resizing 本是 False，不套就会把自己判成「用户调过」。
+            previous = self._auto_resizing
+            self._auto_resizing = True
+            try:
+                self.resize(self.width(), target)
+            finally:
+                self._auto_resizing = previous
+
+        # 还没稳定就再量一轮，最多 `_FIT_MAX_ROUNDS` 次防死循环
+        if not settled and self._fit_rounds < _FIT_MAX_ROUNDS:
+            self._fit_rounds += 1
+            self._fit_pending = True
+            QTimer.singleShot(0, self._apply_fitted_height)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """用户手动改过尺寸后，交出高度的控制权。
+
+        程序自己调 ``resize()`` 同样会走到这里，所以自动调整前后会开关
+        ``_auto_resizing``。**构造与首次显示阶段也必须是「自动」** ——
+        ``show()`` 本身就会触发一次 resizeEvent（窗口管理器给个默认尺寸），
+        把它当成用户操作会让自适应永久失效（09-21 第一版就这么错的：
+        首次启动量出该是 404，实际停在 610 且不再跟随）。
+        """
+        super().resizeEvent(event)
+        if not self._auto_resizing:
+            self._size_is_user_owned = True
 
     def _refresh_summaries(self) -> None:
         """把各分区的一行摘要填上 —— 折叠态下这是用户唯一能看到的信息。"""
@@ -918,14 +1105,20 @@ class MainWindow(QMainWindow):
         这里曾经多写了一个 ``raw.startswith(FIRST_MINIMIZE_HINT)`` 判断，而那个常量
         早已在重构中被删掉 —— 于是**第二次启动必崩**（首次启动 geometry 还是空的，
         `or` 短路让那句永远不被求值，所以测试一路绿灯）。已改为只判空。
+
+        恢复成功即认定「尺寸归用户所有」：上次的高度是他自己拉的，启动时不该
+        被自适应算法按内容改掉。
         """
         raw = self._config.window.geometry
         if not raw:
             return
         try:
-            self.restoreGeometry(QByteArray.fromBase64(raw.encode("ascii")))
+            restored = self.restoreGeometry(QByteArray.fromBase64(raw.encode("ascii")))
         except (ValueError, UnicodeEncodeError):
             log.debug("窗口几何信息无法解析，已忽略")
+            return
+        if restored:
+            self._size_is_user_owned = True
 
     def _save_geometry(self) -> None:
         self._config.window.geometry = bytes(self.saveGeometry().toBase64()).decode("ascii")
