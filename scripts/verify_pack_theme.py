@@ -3,9 +3,17 @@
 用法：
     python scripts/verify_pack_theme.py "dist/USB Switch Console/USB Switch Console.exe"
 
-判据（与 09-19 的手工数字对齐）：
-    - usbswitch.ui.theme 的字符串常量里必须出现 PALETTES / build_stylesheet / state_fg
-    - co_names 数量应比旧版明显多（旧版 34 → 新版 43 量级）
+这条脚本存在的理由：「构建身份」只证明**打包时间晚于源码 mtime**，证不了目标
+模块真被换掉（比如增量打包漏掉某个 .py）。直接读产物里的字节码才是硬证据。
+
+    - usbswitch.ui.theme 的字符串常量里必须出现 PALETTES / LIGHT / DARK
+    - co_names 里必须出现 build_stylesheet / state_fg / log_color 等
+    - QSS 里新增的片段（QToolTip / QComboBox::drop-down）必须能找到
+    - widgets 必须走「状态属性」那条路（有 repolish、有语义键字符串）
+
+**收集 co_names 一定要递归。** `pyz.extract()` 给的是模块顶层 code，
+类体与函数体是它的嵌套 code 对象 —— 只取顶层 `co_names` 会漏掉所有方法名
+（09-21 查 main_window 时踩到：7 个方法全报 MISS，其实都在产物里）。
 """
 from __future__ import annotations
 
@@ -16,13 +24,26 @@ from PyInstaller.archive.readers import CArchiveReader
 
 
 def collect_strings(code, out: set[str], depth: int = 0) -> None:
-    if depth > 12:
+    if depth > 15:
         return
     for const in code.co_consts:
         if isinstance(const, str):
             out.add(const)
         elif hasattr(const, "co_consts"):
             collect_strings(const, out, depth + 1)
+
+
+def collect_names(code, out: set[str], depth: int = 0) -> None:
+    """递归收集所有嵌套 code 对象的 co_names。
+
+    类方法与函数内的属性访问都在嵌套 code 里，不递归就会漏。
+    """
+    if depth > 15:
+        return
+    out.update(code.co_names)
+    for const in code.co_consts:
+        if hasattr(const, "co_consts") and not isinstance(const, str):
+            collect_names(const, out, depth + 1)
 
 
 def main() -> int:
@@ -33,8 +54,9 @@ def main() -> int:
     code = pyz.extract("usbswitch.ui.theme")
     strings: set[str] = set()
     collect_strings(code, strings)
-    # 函数名 / 属性名在 co_names（与 co_consts 分开存），两者都要查。
-    names: set[str] = set(code.co_names)
+    # 函数名 / 属性名在 co_names（与 co_consts 分开存），必须**递归**收集
+    names: set[str] = set()
+    collect_names(code, names)
 
     # 常量类（字符串常量里能找到）
     const_syms = ["PALETTES", "LIGHT", "DARK", "MODES", "_ActivePalette"]
@@ -54,7 +76,7 @@ def main() -> int:
 
     print("\n[规模]")
     print("  字符串常量:", len(strings))
-    print("  co_names  :", len(code.co_names))
+    print("  co_names（含嵌套）:", len(names))
 
     # 主题相关的高风险字符串：新 QSS 里才会有
     probes = ["QToolTip", "QComboBox::drop-down", "QRadioButton"]
@@ -72,7 +94,8 @@ def main() -> int:
     widgets = pyz.extract("usbswitch.ui.widgets")
     wstrings: set[str] = set()
     collect_strings(widgets, wstrings)
-    wnames: set[str] = set(widgets.co_names)
+    wnames: set[str] = set()
+    collect_names(widgets, wnames)
     # 判据：widgets 必须真的走「属性选择器」这条路 —— 有 repolish 调用，
     # 且能见到语义键与 "state" 属性名。setProperty 是 C 级方法，
     # 在部分版本里不落进 co_names，所以不把它当必要条件。
