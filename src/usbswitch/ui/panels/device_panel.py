@@ -27,9 +27,11 @@ class DevicePanel(QFrame):
         self._label = QLabel(f"未连接  ·  {device_name}")
 
         self._btn_scan = QPushButton("扫描")
+        self._btn_scan.setToolTip("只查看附近有哪些 USB-Switch，不会建立连接")
         self._btn_scan.clicked.connect(self.scanRequested.emit)
         self._btn_connect = QPushButton("连接设备")
         self._btn_connect.setObjectName("Primary")
+        self._btn_connect.setToolTip("扫描并连接设备，断线后自动重连")
         self._btn_connect.clicked.connect(self._on_connect_clicked)
 
         layout = QHBoxLayout(self)

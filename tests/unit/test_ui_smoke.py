@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,6 +164,53 @@ def test_connect_triggers_automatic_status_query(qapp, data_dir, monkeypatch):
 
     assert calls, "连接成功后没有自动查询状态"
     assert window._hero.card(Host.A).isEnabled() is True
+
+    window.shutdown()
+
+
+def test_scan_lists_devices_without_connecting(qapp, data_dir, monkeypatch):
+    """回归测试：「扫描」只列设备，**不得**顺手发起连接。
+
+    这里曾经在扫到设备后调 `requestConnection(True)`，于是「扫描」与
+    「连接设备」两个按钮的净效果变得一样（都是「扫一遍并连上」），
+    「扫描」再也无法只用来确认附近有哪些设备。
+
+    断言必须能区分新旧两种行为：只要「扫到设备后仍会调用 requestConnection」
+    就判失败 —— 单看「有没有列出设备」新旧都通过，等于没有断言。
+    """
+    from usbswitch.core.models import AppConfig
+    from usbswitch.ui.main_window import MainWindow
+
+    window = MainWindow(AppConfig())
+    connects: list[bool] = []
+    monkeypatch.setattr(
+        window._worker, "requestConnection", lambda wanted: connects.append(wanted)
+    )
+
+    window._on_devices_found([SimpleNamespace(name="USB-Switch", address="AA:BB", rssi=-50)])
+
+    assert connects == [], f"「扫描」不该建立连接，却调用了 requestConnection{connects}"
+    assert window._device._btn_scan.isEnabled() is True, "扫描结束后按钮应恢复可用"
+
+    window.shutdown()
+
+
+def test_scan_with_no_devices_still_does_not_connect(qapp, data_dir, monkeypatch):
+    """扫不到设备时同样不该尝试连接（旧实现在这条路径上也没连，一并钉住）。"""
+    from usbswitch.core.models import AppConfig
+    from usbswitch.ui.main_window import MainWindow
+
+    window = MainWindow(AppConfig())
+    connects: list[bool] = []
+    monkeypatch.setattr(
+        window._worker, "requestConnection", lambda wanted: connects.append(wanted)
+    )
+    monkeypatch.setattr("usbswitch.ui.main_window.QMessageBox.warning", lambda *a, **k: None)
+
+    window._on_devices_found([])
+
+    assert connects == [], "扫不到设备时不该发起连接"
+    assert window._device._btn_scan.isEnabled() is True
 
     window.shutdown()
 

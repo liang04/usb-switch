@@ -662,10 +662,20 @@ class MainWindow(QMainWindow):
 
     def _on_scan_requested(self) -> None:
         self._device.set_scanning(True)
-        self._append("info", "开始扫描附近的 USB-Switch 设备 …")
+        self._append("info", "开始扫描附近的 USB-Switch 设备（只查看，不连接）…")
         self._worker.requestScan()
 
     def _on_devices_found(self, devices: list) -> None:
+        """「扫描」的收尾 —— **只列设备，不连接**。
+
+        扫描与连接是两件事：「扫描」回答「附近有哪些设备」，用于连接前的
+        确认与排查（名字对不对、信号多强、有没有被别的程序占着）；
+        「连接设备」才负责建立并保持连接。
+
+        这里曾经在扫到设备后顺手调 ``requestConnection(True)``，于是两个按钮
+        的净效果变成一样（都是「扫一遍并把连上」），扫描再也无法只用来
+        看一眼设备列表 —— 去掉它，让两个按钮各司其职。
+        """
         self._device.set_scanning(False)
         if not devices:
             self._append("warning", "未发现设备。请确认 ESP32-C3 已上电、电脑蓝牙已打开。")
@@ -683,7 +693,10 @@ class MainWindow(QMainWindow):
             rssi = f"，信号 {item.rssi} dBm" if item.rssi is not None else ""
             self._append("success", f"发现 {item.name}（{item.address}{rssi}）")
 
-        self._worker.requestConnection(True)
+        self._append(
+            "info",
+            f"共发现 {len(devices)} 个设备。需要操作时请点「连接设备」。",
+        )
 
     # -- 切换 --------------------------------------------------------------- #
 
